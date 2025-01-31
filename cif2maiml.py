@@ -47,9 +47,9 @@ def formatter_datetime(year,month,day,hour,min,sec,gmtime):
 
 ################################################
 ### CIFデータ値の数値型のフォーマット　
-##### 00.0000(nn) --> 00.0000 , 0.00nn #########
+#####  00.0000 , nn --> 00.0000 , 0.00nn #########
 ################################################
-def formatter_standarddeviation(str_value, sd_number):
+def formatter_standarddeviation(str_value, sd_number, fstring):
     def count_decimal_places(str_number):
         # Decimalオブジェクトに変換して処理する
         number = Decimal(str_number)  # 文字列をDecimalにする
@@ -66,37 +66,67 @@ def formatter_standarddeviation(str_value, sd_number):
             # 数字を小数部の桁数に合わせる
             factor = 10 ** target_digits
             # まずスケーリングしてから、丸めて、再スケーリング
-            return round(float(number) / factor, target_digits)
+            return "{:.{}f}".format(round(float(number) / factor, target_digits), target_digits)
 
-    # test_number の少数部分の桁数を取得
-    decimal_places = count_decimal_places(str_value) # valueはstring型
-    print('decimal_places:',decimal_places)
+    # value の少数部分の桁数を取得
+    decimal_places = count_decimal_places(str_value)
     fstring = f"{0:.{decimal_places}f}"
-    # test_number2 を test_number の少数部分の桁数に合わせて調整
+    decimal_places = len(fstring.split('.')[1]) if '.' in fstring else 0
+        
+    #print('decimal_places:',decimal_places)
+    # sd_number:(nn)をvalueの少数部分の桁数に合わせて調整
     adjusted_value = adjust_decimal_places(sd_number, decimal_places)
-    print(str_value,'  ', sd_number)
-    print('adjusted_value:',adjusted_value)
-    
+    #print(str_value,'  ', sd_number)
     return fstring, adjusted_value
 
 
 ################################################
-### ReadCifで読み込んだCIFデータ値のリスト型のフォーマット　
-##### ['xxx', 'yyyy'] --> xxx yyyy #########
+### ReadCifで読み込んだCIFデータ値のフォーマット
+# 
+# ①リスト型のフォーマット　
+### ['xxx', 'yyyy'] --> xxx yyyy
+# ②### CIFデータ値の数値型のフォーマット　
+### 00.0000(nn) --> 00.0000 , 0.00nn 
 ################################################
-def convert_list(a):
-    # 文字列がリストの形式かどうか確認
+def extract_uncertainty(v):
+    def createuncertainty(value, fstring):
+        value = str(value)
+        floatpattern = r'^[-+]?[0-9]+(\.[0-9]+)?\(\d+\)$'
+        u_value = False
+        #fstring = False
+        if re.match(floatpattern, value):
+            u_value = value.split('(')[1].replace(')','')
+            value = value.split('(')[0]
+            fstring,u_value = formatter_standarddeviation(value,u_value, fstring)
+        return value, u_value, fstring
+    
+    fstring = False
     try:
-        # ast.literal_evalで安全に文字列をリストとして評価
-        list_a = ast.literal_eval(a)
-        if isinstance(list_a, list):
-            # リストが正しく評価されれば、カンマをスペースに変換して返す
-            return ' '.join(list_a)
-        else:
-            return False
-    except (ValueError, SyntaxError):
-        # リスト形式でない場合はエラーが発生するのでその場合はFalse
-        return False
+        # ast.literal_evalで文字列をリストとして評価
+        list_v = ast.literal_eval(v)
+        if isinstance(list_v, list):  # リストの場合
+            list_u = []  # uncertaintyを保持するリスト
+            for index, list_value in enumerate(list_v):
+                value, u_value, fstring = createuncertainty(list_value, fstring)
+                if u_value:  # uncertaintyが存在する場合
+                    list_v[index] = value
+                    list_u.append(u_value)  # uncertaintyの値を追加
+                else:  # uncertaintyがない場合、そのまま
+                    list_u.append('')
+                    
+            # list_u内の全ての値が''であれば、Falseを返す
+            if all(u == '' for u in list_u):
+                return ' '.join(map(str, list_v)), False, False
+            # リストをスペース区切りの文字列に変換
+            return ' '.join(map(str, list_v)), ' '.join(map(str, list_u)), ''
+
+        else:  # vがリストではない場合
+            value, u_value, fstring = createuncertainty(v, fstring)
+            return value, u_value, fstring
+    except (ValueError, SyntaxError):  # vがリストではない場合
+        value, u_value, fstring = createuncertainty(v, fstring)
+        return value, u_value, fstring
+
 
 
 ################################################
@@ -125,34 +155,21 @@ def writeValue(generallist1, ciflist):
                 u_value = ''
                 if cifkey == key:
                     value = str(cif['value'])
-                    floatpattern = r'^[-+]?[0-9]+(\.[0-9]+)?\(\d+\)$'
-                    if re.match(floatpattern, value):
-                        u_value = value.split('(')[1].replace(')','')
-                        value = value.split('(')[0]
-                    else:
-                        value_converted = convert_list(value)
-                        if value_converted:
-                            value = value_converted
-                        else:
-                            value= value
-                    
-                    new_generaldict[maimlelement.value] = value
-                
-                    if u_value != '':
+                    print(value)
+                    value_converted, u_value, fstring = extract_uncertainty(value)
+                    new_generaldict[maimlelement.value] = value_converted
+                    if value_converted and u_value: # uncertaintyが存在する場合
+                        value = value_converted
                         ## uncertaintyを作成
                         new_uncgenericdict = {}
                         new_uncgenericdict[maimlelement.keyd] = 'StandardDeviation'
                         new_uncgenericdict[maimlelement.typed] = 'doubleType'
-                        u_formatstring, u_value= formatter_standarddeviation(value,u_value)
-                        new_uncgenericdict[maimlelement.formatStringd] = str(u_formatstring)
+                        new_uncgenericdict[maimlelement.formatStringd] = str(fstring)
                         new_uncgenericdict[maimlelement.value] = str(u_value)
                         
                         ## uncertaintyを追加
                         new_generaldict.update({maimlelement.uncertainty : new_uncgenericdict})
-                    else:
-                        pass
-                    break
-                            
+                    break    
             ##
             if value == None:
                 #print("hit key:None::",key)
